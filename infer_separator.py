@@ -1,9 +1,9 @@
-# infer_separator.py
 import os
 import argparse
 import torch
 import soundfile as sf
 import numpy as np
+import time                         # --- TIME ---
 from asteroid.models import ConvTasNet
 from utils import load_wav, save_wav, SAMPLE_RATE
 
@@ -32,11 +32,19 @@ def main():
     x = torch.from_numpy(wav).unsqueeze(0).to(args.device)  # (1, T)
 
     # ---------------------------
+    # Pomiar czasu
+    # ---------------------------
+    start_t = time.time()   # --- TIME ---
+
+    # ---------------------------
     # Inference z AMP
     # ---------------------------
     with torch.no_grad():
         with torch.cuda.amp.autocast():
             est = model(x)   # (1, n_src, T)
+
+    # STOP
+    infer_time = time.time() - start_t    # --- TIME ---
 
     est = est.squeeze(0).cpu().numpy()   # (n_src, T)
 
@@ -48,7 +56,15 @@ def main():
         save_wav(out_path, est[i], SAMPLE_RATE)
         print("Zapisano:", out_path)
 
-    print("\nDONE — możesz odsłuchać wyniki w folderze:", args.outdir)
+    # ---------------------------
+    # Zapis czasu do pliku
+    # ---------------------------
+    time_file = os.path.join(args.outdir, "infer_time.txt")  # --- TIME ---
+    with open(time_file, "w") as f:
+        f.write(f"Inference time (s): {infer_time:.4f}\n")
+
+    print(f"\nInference time: {infer_time:.4f} s")             # --- TIME ---
+    print("DONE — możesz odsłuchać wyniki w folderze:", args.outdir)
 
 
 if __name__ == "__main__":
