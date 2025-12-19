@@ -1,0 +1,69 @@
+dataset.py
+
+Plik definiuje klasę MixCleanDataset, która odpowiada za wczytywanie danych audio do treningu modeli.
+Zakłada on określoną strukturę katalogów (mix, s1, s2, …), gdzie mix zawiera sygnał zmieszany, a foldery sX pojedyncze źródła.
+Dataset zwraca trzy elementy: zaszumiony miks, czysty miks (sumę źródeł) oraz pojedyncze źródła, które są później wykorzystywane zarówno do odszumiania, jak i separacji.
+Dane są konwertowane do formatu torch.Tensor i typu float32.
+
+utils.py
+
+Plik zawiera funkcje pomocnicze do obsługi audio.
+Umożliwia wczytywanie plików WAV z resamplingiem (load_wav), zapisywanie audio (save_wav) oraz podstawowe operacje sygnałowe, takie jak obliczanie RMS czy dopasowanie długości sygnału.
+Funkcje te są wykorzystywane w wielu miejscach projektu, głównie podczas treningu i inferencji modeli.
+Dzięki temu kod główny pozostaje czytelny i modularny.
+
+download_data.py
+
+Skrypt służy do automatycznego pobierania i przygotowania zbioru danych LibriSpeech.
+Pobiera archiwum z internetu, rozpakowuje je oraz reorganizuje strukturę katalogów do prostszej postaci.
+Finalnie dane czystej mowy trafiają do katalogu data/clean, co ułatwia ich dalsze wykorzystanie.
+Plik ten odpowiada wyłącznie za etap przygotowania danych wejściowych.
+
+train_denoiser.py
+
+Plik odpowiada za trening modelu odszumiającego audio.
+Zawiera implementację prostego modelu typu UNet 1D, który usuwa szum z sygnału czasowego.
+Skrypt ładuje dane, definiuje funkcję straty (L1), przeprowadza pętlę treningową i walidacyjną oraz zapisuje najlepszy model.
+Celem tego etapu jest poprawa jakości miksu przed dalszą separacją źródeł.
+
+denoise_infer.py
+
+Ten skrypt służy do użycia wytrenowanego denoisera na całym zbiorze danych.
+Wczytuje model odszumiający i przetwarza wszystkie pliki audio z katalogów train i val.
+Odszumione pliki są zapisywane w nowej lokalizacji, a czas przetwarzania każdego pliku jest logowany do pliku tekstowego.
+Dzięki temu powstaje nowy, „czystszy” dataset do treningu separatora.
+
+train_separator.py
+
+Plik realizuje trening modelu separacji źródeł audio z wykorzystaniem ConvTasNet z biblioteki Asteroid.
+Model uczy się rozdzielać miks na pojedyncze źródła mowy, korzystając z funkcji straty SI-SDR z PIT (Permutation Invariant Training).
+Skrypt obsługuje trening, walidację, mixed precision (AMP) oraz zapis najlepszego modelu.
+Jest to końcowy i kluczowy etap całego pipeline’u separacji mowy.
+
+prepare_clean_librispeech.py
+
+Skrypt służy do wstępnego przygotowania czystych nagrań mowy z LibriSpeech.
+Czyści i normalizuje pliki audio (np. kanały, długość, format), tak aby wszystkie nagrania miały spójną postać do dalszego przetwarzania.
+Jego celem jest stworzenie jednolitego zbioru czystej mowy, który później może być mieszany lub używany jako źródła referencyjne.
+To pierwszy krok w budowie datasetu treningowego.
+
+prepare_data.py
+
+Plik odpowiada za tworzenie właściwego datasetu do uczenia modeli.
+Na bazie czystych nagrań generuje sztuczne miksy oraz rozdziela dane na zbiory train i val.
+Tworzy strukturę katalogów zgodną z wymaganiami MixCleanDataset (mix, s1, s2, …).
+Dzięki temu dane są gotowe do bezpośredniego użycia w treningu denoisera i separatora.
+
+infer_separator.py
+
+Skrypt służy do uruchamiania wytrenowanego modelu separacji na nowych danych.
+Wczytuje model ConvTasNet, pobiera pliki miksów audio i generuje osobne pliki WAV dla każdego źródła.
+Obsługuje poprawne formatowanie danych wejściowych i zapis wyników do odpowiednich folderów.
+Jest to etap inferencji, czyli praktycznego użycia modelu po treningu.
+
+evaluate.py
+
+Plik odpowiada za ocenę jakości działania modelu separacji.
+Porównuje sygnały wyjściowe modelu z referencyjnymi źródłami i oblicza metryki jakości (np. SI-SDR).
+Pozwala ilościowo sprawdzić, jak dobrze model rozdziela źródła w porównaniu do danych prawdziwych.
+Jest wykorzystywany do walidacji końcowych wyników i analizy skuteczności rozwiązania.

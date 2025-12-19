@@ -1,0 +1,10 @@
+torch>=2.0.0
+torchaudio
+numpy
+soundfile
+librosa
+tqdm
+pyyaml
+asteroid
+noisereduce
+scipy
