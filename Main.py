@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Real-time Audio Denoiser + Speaker Recognition System
+Real-time Audio Denoiser + Speaker Recognition System z fail-safe mechanizmem
 Uses denoising model and speaker recognition to pass only selected speaker's audio
-with smooth audio output using overlap-add method
+with smooth audio output using overlap-add method and fail-safe protection
 """
 
 import torch
@@ -83,7 +83,7 @@ class SpeakerEncoder(nn.Module):
         return x
 
 def extract_features_for_recognition(audio, sr=16000):
-    """Extract MFCC features for speaker recognition (identical to test_speaker_recognition.py)"""
+    """Extract MFCC features for speaker recognition"""
     # Normalize audio first
     if np.max(np.abs(audio)) > 0:
         audio = audio / (np.max(np.abs(audio)) + 1e-8)
@@ -94,7 +94,9 @@ def extract_features_for_recognition(audio, sr=16000):
         n_mfcc=20,
         n_mels=80,
         n_fft=512,
-        hop_length=160
+        hop_length=160,
+        fmin=50,
+        fmax=8000
     )
     
     mfcc_delta = librosa.feature.delta(mfcc)
@@ -108,30 +110,6 @@ def extract_features_for_recognition(audio, sr=16000):
                      (features_tensor.std(dim=2, keepdim=True) + 1e-8)
     
     return features_tensor
-
-def load_audio_for_recognition(filepath, target_sr=16000, duration=3.0):
-    """Load audio for recognition"""
-    try:
-        audio, sr = librosa.load(filepath, sr=target_sr, mono=True)
-        
-        # Normalization
-        if np.max(np.abs(audio)) > 0:
-            audio = audio / np.max(np.abs(audio))
-        
-        # Trim/padding
-        target_len = int(duration * target_sr)
-        if len(audio) > target_len:
-            # Random segment
-            start = np.random.randint(0, len(audio) - target_len)
-            audio = audio[start:start + target_len]
-        else:
-            padding = np.zeros(target_len - len(audio))
-            audio = np.concatenate([audio, padding])
-        
-        return audio
-    except Exception as e:
-        print(f"Error loading {filepath}: {e}")
-        return None
 
 # ============================================
 # SPEAKER RECOGNIZER WITH YOUR MODEL
@@ -166,8 +144,8 @@ class SpeakerRecognizer:
         self.speaker_embeddings = {}  # speaker_id -> embedding tensor
         self.speaker_names = {}       # speaker_id -> name
         
-        # Similarity threshold - LOWERED for better detection
-        self.similarity_threshold = 0.3  # Lowered from 0.6
+        # Similarity threshold
+        self.similarity_threshold = 0.3
         
         # Load existing database
         self.load_database()
@@ -246,7 +224,7 @@ class SpeakerRecognizer:
                 except Exception as e:
                     print(f"  Error calculating similarity for {speaker_id}: {e}")
         
-        # Check threshold - LOWERED for better detection
+        # Check threshold
         if best_similarity >= self.similarity_threshold:
             name = self.speaker_names.get(best_speaker_id, f"Speaker_{best_speaker_id}")
             return best_speaker_id, best_similarity, name
@@ -289,11 +267,11 @@ class SpeakerRecognizer:
         return speakers
 
 # ============================================
-# AI ENHANCED SPEAKER TRACKER (SIMPLIFIED)
+# AI ENHANCED SPEAKER TRACKER WITH FAIL-SAFE
 # ============================================
 
 class AIEnhancedSpeakerTracker:
-    """Simplified speaker tracker for direct audio (no separation)"""
+    """Speaker tracker with fail-safe mechanism"""
     
     def __init__(self):
         # Use YOUR speaker recognizer
@@ -302,6 +280,17 @@ class AIEnhancedSpeakerTracker:
         # Speaker selection mode
         self.selected_speaker_id = -1  # -1 = auto (similarity-based), specific ID = only that speaker
         self.block_other_speakers = False
+        
+        # FAIL-SAFE MECHANISM
+        self.fail_safe_enabled = True
+        self.consecutive_matches = 0  # Licznik kolejnych dopasowań
+        self.consecutive_misses = 0   # Licznik kolejnych niedopasowań
+        self.fail_safe_counter = 0    # Licznik fail-safe (ile próbek przepuścić po serii dopasowań)
+        
+        # Parametry fail-safe
+        self.fail_safe_match_threshold = 3  # Po ilu dopasowaniach włączyć fail-safe
+        self.fail_safe_duration = 5         # Ile próbek przepuścić w trybie fail-safe
+        self.max_fail_safe_attempts = 3     # Maksymalna liczba aktywacji fail-safe z rzędu
         
         # Activity tracking with history for better stability
         self.speaker_activity = defaultdict(float)
@@ -323,6 +312,20 @@ class AIEnhancedSpeakerTracker:
         
         # Energy threshold to avoid processing silence
         self.energy_threshold = 0.01
+        
+        # Fail-safe state tracking
+        self.fail_safe_active = False
+        self.fail_safe_activations = 0
+        self.last_fail_safe_time = 0
+        
+        # Statistics
+        self.stats = {
+            'total_frames': 0,
+            'matched_frames': 0,
+            'failed_frames': 0,
+            'fail_safe_activations': 0,
+            'fail_safe_frames': 0
+        }
     
     def set_selected_speaker(self, speaker_id):
         """Set which speaker to allow through"""
@@ -333,6 +336,50 @@ class AIEnhancedSpeakerTracker:
             self.block_other_speakers = True
         # Clear decision buffer when changing speaker selection
         self.decision_buffer.clear()
+        # Reset fail-safe counters
+        self.consecutive_matches = 0
+        self.consecutive_misses = 0
+        self.fail_safe_counter = 0
+        self.fail_safe_active = False
+    
+    def update_fail_safe_state(self, is_match):
+        """Update fail-safe state based on current match"""
+        self.stats['total_frames'] += 1
+        
+        if is_match:
+            self.consecutive_matches += 1
+            self.consecutive_misses = 0
+            self.stats['matched_frames'] += 1
+            
+            # Jeśli mamy serię dopasowań, aktywuj fail-safe
+            if (self.consecutive_matches >= self.fail_safe_match_threshold and 
+                not self.fail_safe_active and
+                self.fail_safe_enabled):
+                
+                # Sprawdź czy nie przekraczamy limitu aktywacji
+                if (time.time() - self.last_fail_safe_time > 10 or 
+                    self.fail_safe_activations < self.max_fail_safe_attempts):
+                    
+                    self.fail_safe_counter = self.fail_safe_duration
+                    self.fail_safe_active = True
+                    self.fail_safe_activations += 1
+                    self.last_fail_safe_time = time.time()
+                    self.stats['fail_safe_activations'] += 1
+                    
+                    if self.debug:
+                        print(f"[FAIL-SAFE] 🔄 Aktywacja! Przepuszczam następne {self.fail_safe_duration} próbek")
+        else:
+            self.consecutive_misses += 1
+            self.consecutive_matches = 0
+            self.stats['failed_frames'] += 1
+        
+        # Aktualizuj licznik fail-safe
+        if self.fail_safe_counter > 0:
+            self.fail_safe_counter -= 1
+            self.stats['fail_safe_frames'] += 1
+            if self.debug and self.fail_safe_counter == 0:
+                print(f"[FAIL-SAFE] ✅ Tryb fail-safe zakończony")
+                self.fail_safe_active = False
     
     def accumulate_audio_for_recognition(self, audio):
         """Accumulate audio for better speaker recognition"""
@@ -351,7 +398,7 @@ class AIEnhancedSpeakerTracker:
         return True
     
     def process_audio(self, audio):
-        """Process audio batch and check if it contains selected speaker"""
+        """Process audio batch with fail-safe mechanism"""
         # First check if audio has enough energy
         energy = np.mean(audio ** 2)
         if energy < self.energy_threshold:
@@ -389,12 +436,28 @@ class AIEnhancedSpeakerTracker:
             if len(self.speaker_history[speaker_id]) > 5:
                 self.speaker_history[speaker_id].pop(0)
         
-        # Determine if we should pass this audio with decision smoothing
+        # Determine if this is a match with selected speaker
+        is_match = False
+        if self.block_other_speakers and self.selected_speaker_id != -1:
+            if speaker_id is not None and str(speaker_id) == str(self.selected_speaker_id):
+                is_match = True
+        
+        # Update fail-safe state
+        self.update_fail_safe_state(is_match)
+        
+        # Determine if we should pass this audio
         should_pass = False
         
-        if self.block_other_speakers and self.selected_speaker_id != -1:
+        # FAIL-SAFE LOGIC: Jeśli jesteśmy w trybie fail-safe, przepuszczamy audio
+        if self.fail_safe_counter > 0:
+            should_pass = True
+            if self.debug:
+                print(f"[FAIL-SAFE] 🛡️  Przepuszczam (pozostało: {self.fail_safe_counter})")
+        
+        # Normal logic (jeśli nie w fail-safe)
+        elif self.block_other_speakers and self.selected_speaker_id != -1:
             # Mode: only selected speaker
-            if speaker_id is not None and str(speaker_id) == str(self.selected_speaker_id):
+            if is_match:
                 # Add to decision buffer
                 self.decision_buffer.append(True)
                 should_pass = True
@@ -417,7 +480,7 @@ class AIEnhancedSpeakerTracker:
                 print(f"[TRACKER] 🔊 Passing '{speaker_name}' (sim={similarity:.3f}, avg={avg_similarity:.3f})")
         
         # Apply decision smoothing if we have enough history
-        if len(self.decision_buffer) == self.decision_buffer.maxlen:
+        if len(self.decision_buffer) == self.decision_buffer.maxlen and not self.fail_safe_active:
             true_count = sum(1 for decision in self.decision_buffer if decision)
             if true_count >= self.decision_threshold:
                 should_pass = True
@@ -444,6 +507,23 @@ class AIEnhancedSpeakerTracker:
     def list_registered_speakers(self):
         """List all registered speakers"""
         return self.recognizer.list_speakers()
+    
+    def get_fail_safe_stats(self):
+        """Get fail-safe statistics"""
+        if self.stats['total_frames'] == 0:
+            return "Brak danych"
+        
+        match_rate = self.stats['matched_frames'] / self.stats['total_frames'] * 100
+        fail_safe_rate = self.stats['fail_safe_frames'] / self.stats['total_frames'] * 100
+        
+        return (f"Match rate: {match_rate:.1f}%, "
+                f"Fail-safe: {self.stats['fail_safe_activations']} aktywacji, "
+                f"Fail-safe frames: {fail_safe_rate:.1f}%")
+    
+    def toggle_fail_safe(self):
+        """Toggle fail-safe mode"""
+        self.fail_safe_enabled = not self.fail_safe_enabled
+        return self.fail_safe_enabled
 
 # ============================================
 # NON-BLOCKING INPUT
@@ -482,7 +562,7 @@ class NonBlockingInput:
         return None
 
 # ============================================
-# MAIN REAL-TIME PROCESSOR WITH SPEAKER RECOGNITION
+# MAIN REAL-TIME PROCESSOR WITH FAIL-SAFE
 # ============================================
 
 class RealTimeDenoiserSpeakerFilter:
@@ -490,7 +570,7 @@ class RealTimeDenoiserSpeakerFilter:
                  denoise_strength=0.5, input_gain=1.0, output_gain=1.0,
                  speaker_gain=1.0, debug_passthrough=False):
         """
-        Real-time denoiser with speaker filtering
+        Real-time denoiser with speaker filtering and fail-safe
         """
         self.denoise_strength = max(0.1, min(0.9, denoise_strength))
         self.input_gain = input_gain
@@ -501,8 +581,12 @@ class RealTimeDenoiserSpeakerFilter:
         # Speaker selection
         self.selected_speaker_id = -1  # -1 = auto/all speakers, specific ID = only that speaker
         
-        # AI speaker tracker with YOUR model
+        # AI speaker tracker with fail-safe
         self.speaker_tracker = AIEnhancedSpeakerTracker()
+        
+        # Fail-safe parameters
+        self.show_fail_safe_stats = True
+        self.last_stats_time = time.time()
         
         # Debug flag
         self.debug_speech_detection = False
@@ -521,6 +605,7 @@ class RealTimeDenoiserSpeakerFilter:
         print(f"Speaker gain: {speaker_gain}")
         print(f"Speaker recognition: YOUR MODEL INTEGRATED")
         print(f"Selection mode: BY SPEAKER ID")
+        print(f"FAIL-SAFE: ENABLED ({self.speaker_tracker.fail_safe_match_threshold} matches → {self.speaker_tracker.fail_safe_duration} samples)")
         print(f"Processing window: {self.window_size} samples ({self.window_size/SAMPLE_RATE*1000:.0f}ms)")
         print(f"Hop size: {self.hop_size} samples ({self.hop_size/SAMPLE_RATE*1000:.0f}ms)")
         print(f"Overlap: 50% for smooth audio output")
@@ -669,6 +754,7 @@ class RealTimeDenoiserSpeakerFilter:
                     break
             
             print(f"\n🎤 Mode: ONLY SPEAKER '{speaker_name}' (ID: {speaker_id})")
+            print(f"   Fail-safe: {self.speaker_tracker.fail_safe_match_threshold} matches → {self.speaker_tracker.fail_safe_duration} samples")
     
     def select_next_speaker(self):
         """Select next active speaker"""
@@ -713,6 +799,12 @@ class RealTimeDenoiserSpeakerFilter:
                       f"Active: {time.time() - spk['last_active']:.1f}s ago {status}")
         else:
             print("\n[SPEAKER INFO] No active speakers")
+        
+        # Fail-safe stats
+        print(f"\n[FAIL-SAFE] Stats: {self.speaker_tracker.get_fail_safe_stats()}")
+        print(f"[FAIL-SAFE] Enabled: {self.speaker_tracker.fail_safe_enabled}")
+        print(f"[FAIL-SAFE] Active: {self.speaker_tracker.fail_safe_active}")
+        print(f"[FAIL-SAFE] Counter: {self.speaker_tracker.fail_safe_counter}")
     
     def toggle_speech_debug(self):
         """Toggle debug mode"""
@@ -720,8 +812,32 @@ class RealTimeDenoiserSpeakerFilter:
         self.speaker_tracker.debug = self.debug_speech_detection
         print(f"[DEBUG] Debug mode: {'ENABLED' if self.debug_speech_detection else 'DISABLED'}")
     
+    def toggle_fail_safe(self):
+        """Toggle fail-safe mode"""
+        enabled = self.speaker_tracker.toggle_fail_safe()
+        print(f"[FAIL-SAFE] Fail-safe mode: {'ENABLED' if enabled else 'DISABLED'}")
+    
+    def adjust_fail_safe_params(self):
+        """Adjust fail-safe parameters"""
+        print("\n[FAIL-SAFE] Current parameters:")
+        print(f"   Matches to activate: {self.speaker_tracker.fail_safe_match_threshold}")
+        print(f"   Samples to pass: {self.speaker_tracker.fail_safe_duration}")
+        
+        try:
+            new_threshold = input(f"   New match threshold [{self.speaker_tracker.fail_safe_match_threshold}]: ").strip()
+            if new_threshold:
+                self.speaker_tracker.fail_safe_match_threshold = int(new_threshold)
+            
+            new_duration = input(f"   New fail-safe duration [{self.speaker_tracker.fail_safe_duration}]: ").strip()
+            if new_duration:
+                self.speaker_tracker.fail_safe_duration = int(new_duration)
+            
+            print(f"[FAIL-SAFE] Updated: {self.speaker_tracker.fail_safe_match_threshold} matches → {self.speaker_tracker.fail_safe_duration} samples")
+        except ValueError:
+            print("[FAIL-SAFE] Invalid input, keeping current values")
+    
     def process_audio_with_speaker_filter(self, audio_chunk_48k):
-        """Process audio: denoise + speaker recognition + filtering"""
+        """Process audio: denoise + speaker recognition + filtering with fail-safe"""
         if self.debug_passthrough:
             return audio_chunk_48k
         
@@ -747,11 +863,11 @@ class RealTimeDenoiserSpeakerFilter:
             print(f"Error in resampling to 16k: {e}")
             return audio_chunk_48k
         
-        # 2. SPEAKER RECOGNITION
+        # 2. SPEAKER RECOGNITION WITH FAIL-SAFE
         if should_display:
-            print(f"[PROCESS] Step 1: Speaker recognition")
+            print(f"[PROCESS] Step 1: Speaker recognition (fail-safe: {self.speaker_tracker.fail_safe_enabled})")
         
-        # Recognize speaker in this audio batch
+        # Recognize speaker in this audio batch (with fail-safe logic)
         speaker_id, should_pass, similarity, speaker_name = self.speaker_tracker.process_audio(audio_16k)
         
         # 3. DENOISING
@@ -760,15 +876,19 @@ class RealTimeDenoiserSpeakerFilter:
         
         denoised_16k = self.denoise_audio(audio_16k, self.denoise_strength)
         
-        # 4. FILTER BASED ON SELECTED SPEAKER
+        # 4. FILTER BASED ON SELECTED SPEAKER (with fail-safe consideration)
         if should_pass:
-            # Pass the audio (it's from the selected speaker)
+            # Pass the audio (it's from the selected speaker or fail-safe is active)
             selected_audio = denoised_16k
             if should_display:
                 if speaker_id is not None:
-                    print(f"[FILTER] ✅ Passing audio from '{speaker_name}' (similarity={similarity:.3f})")
+                    status = "FAIL-SAFE" if self.speaker_tracker.fail_safe_counter > 0 else "MATCH"
+                    print(f"[FILTER] ✅ {status}: Passing audio from '{speaker_name}' (similarity={similarity:.3f})")
                 else:
-                    print(f"[FILTER] 🔊 Passing audio (no speaker filtering)")
+                    if self.speaker_tracker.fail_safe_counter > 0:
+                        print(f"[FILTER] 🛡️  FAIL-SAFE: Passing audio (counter: {self.speaker_tracker.fail_safe_counter})")
+                    else:
+                        print(f"[FILTER] 🔊 Passing audio (no speaker filtering)")
         else:
             # Block audio (not from selected speaker)
             selected_audio = np.zeros_like(denoised_16k)
@@ -821,7 +941,8 @@ class RealTimeDenoiserSpeakerFilter:
                               mode='constant')
         
         if should_display:
-            print(f"[PROCESS] Completed pipeline: Recognize → Denoise → Filter")
+            fail_safe_status = "ACTIVE" if self.speaker_tracker.fail_safe_counter > 0 else "INACTIVE"
+            print(f"[PROCESS] Completed: Recognize → Denoise → Filter | Fail-safe: {fail_safe_status}")
         
         return output_48k
     
@@ -871,12 +992,14 @@ class RealTimeDenoiserSpeakerFilter:
             outdata.fill(0)
     
     def keyboard_listener(self, input_handler):
-        """Keyboard listener with speaker selection"""
+        """Keyboard listener with speaker selection and fail-safe controls"""
         print("\n[KEYBOARD] Speaker Recognition Commands:")
         print("[KEYBOARD] 'n' - select next active speaker")
         print("[KEYBOARD] 'a' - ALL speakers mode (no filtering)")
         print("[KEYBOARD] 'i' - show speaker information")
         print("[KEYBOARD] 'd' - toggle debug mode")
+        print("[KEYBOARD] 'f' - toggle fail-safe mode")
+        print("[KEYBOARD] 'F' (Shift+f) - adjust fail-safe parameters")
         print("[KEYBOARD] 'l' - list registered speakers")
         print("[KEYBOARD] '0'-'9' - select speaker by ID")
         print("[KEYBOARD] 'g' - increase input gain (+0.5)")
@@ -884,6 +1007,7 @@ class RealTimeDenoiserSpeakerFilter:
         print("[KEYBOARD] '+' - increase speaker gain (+1.0)")
         print("[KEYBOARD] '-' - decrease speaker gain (-1.0)")
         print("[KEYBOARD] 't' - set similarity threshold")
+        print("[KEYBOARD] 's' - show fail-safe statistics")
         print("[KEYBOARD] 'q' - quit program")
         
         last_key_time = 0
@@ -909,11 +1033,23 @@ class RealTimeDenoiserSpeakerFilter:
                         elif key == 'd' or key == 'D':
                             self.toggle_speech_debug()
                             last_key_time = current_time
+                        elif key == 'f' or key == 'F':
+                            if key == 'f':
+                                self.toggle_fail_safe()
+                            else:
+                                self.adjust_fail_safe_params()
+                            last_key_time = current_time
                         elif key == 'l' or key == 'L':
                             print("\n[SPEAKERS] Registered speakers:")
                             speakers = self.speaker_tracker.list_registered_speakers()
                             for line in speakers:
                                 print(f"  {line}")
+                            last_key_time = current_time
+                        elif key == 's' or key == 'S':
+                            print(f"\n[STATS] Fail-safe statistics:")
+                            print(f"  {self.speaker_tracker.get_fail_safe_stats()}")
+                            print(f"  Consecutive matches: {self.speaker_tracker.consecutive_matches}")
+                            print(f"  Fail-safe counter: {self.speaker_tracker.fail_safe_counter}")
                             last_key_time = current_time
                         elif key.isdigit():
                             speaker_id = int(key)
@@ -937,14 +1073,14 @@ class RealTimeDenoiserSpeakerFilter:
                             last_key_time = current_time
                         elif key == 't' or key == 'T':
                             try:
-                                print("\n[THRESHOLD] Current similarity threshold: {:.2f}".format(
-                                    self.speaker_tracker.recognizer.similarity_threshold))
+                                print(f"\n[THRESHOLD] Current similarity threshold: {self.speaker_tracker.recognizer.similarity_threshold:.2f}")
                                 print("[THRESHOLD] Enter new threshold (0.1-0.9): ")
-                                # Simple input - you might want to implement better input handling
-                                time.sleep(1)  # Give time to read
-                                # For now, just lower it more
-                                self.speaker_tracker.recognizer.similarity_threshold = 0.25
-                                print(f"[THRESHOLD] Set similarity threshold to: 0.25")
+                                # Simple input
+                                time.sleep(1)
+                                # Możesz dodać prawdziwe wczytywanie tutaj
+                                # Dla uproszczenia ustawmy 0.3
+                                self.speaker_tracker.recognizer.similarity_threshold = 0.3
+                                print(f"[THRESHOLD] Set similarity threshold to: 0.3")
                             except:
                                 pass
                             last_key_time = current_time
@@ -1098,10 +1234,11 @@ class RealTimeDenoiserSpeakerFilter:
     def run(self, input_device=None, output_device=None):
         """Run the processor"""
         print("\n" + "="*60)
-        print("Real-time Audio Denoiser with Speaker Filtering")
+        print("Real-time Audio Denoiser with Speaker Filtering & FAIL-SAFE")
         print("="*60)
         print(f"Speaker recognition: YOUR MODEL INTEGRATED")
         print(f"Processing: Recognize → Denoise → Filter")
+        print(f"Fail-safe: {self.speaker_tracker.fail_safe_match_threshold} matches → {self.speaker_tracker.fail_safe_duration} samples")
         print(f"Current speaker: {'ALL (no filtering)' if self.selected_speaker_id == -1 else f'ID: {self.selected_speaker_id}'}")
         print(f"Denoise strength: {self.denoise_strength}")
         print(f"Speaker gain: {self.speaker_gain}x (auto-adjusted)")
@@ -1144,6 +1281,7 @@ class RealTimeDenoiserSpeakerFilter:
                 else:
                     print("🎤 AI Speaker Filtering System running!")
                     print(f"   Selected speaker: {'ALL (no filtering)' if self.selected_speaker_id == -1 else f'ID: {self.selected_speaker_id}'}")
+                    print(f"   Fail-safe: ENABLED ({self.speaker_tracker.fail_safe_match_threshold} matches → {self.speaker_tracker.fail_safe_duration} samples)")
                     print(f"   Processing pipeline: Recognize → Denoise → Filter")
                     print(f"   Display interval: {self.display_interval} windows")
                     print(f"   Audio processing: 50% overlap-add for smooth output")
@@ -1153,8 +1291,11 @@ class RealTimeDenoiserSpeakerFilter:
                     print(f"   Use 'i' to show speaker information")
                     print(f"   Use 'l' to list registered speakers")
                     print(f"   Use 'd' to toggle debug mode")
+                    print(f"   Use 'f' to toggle fail-safe mode")
+                    print(f"   Use 'F' to adjust fail-safe parameters")
                     print(f"   Use '+'/'-' to adjust speaker gain")
                     print(f"   Use 't' to adjust similarity threshold (currently: {self.speaker_tracker.recognizer.similarity_threshold:.2f})")
+                    print(f"   Use 's' to show fail-safe statistics")
                 
                 last_status_time = time.time()
                 
@@ -1186,9 +1327,15 @@ class RealTimeDenoiserSpeakerFilter:
                                     break
                             selected_info = f"Selected: {speaker_name}"
                         
+                        # Fail-safe status
+                        fail_safe_status = ""
+                        if self.speaker_tracker.fail_safe_counter > 0:
+                            fail_safe_status = f"FAIL-SAFE: {self.speaker_tracker.fail_safe_counter}"
+                        
                         print(f"Status: {audio_status}, "
                               f"active_speakers={active_count}, "
                               f"{selected_info}, "
+                              f"{fail_safe_status}, "
                               f"threshold={self.speaker_tracker.recognizer.similarity_threshold:.2f}, "
                               f"input_gain={self.input_gain:.1f}, "
                               f"processed={self.samples_processed}")
@@ -1205,14 +1352,22 @@ class RealTimeDenoiserSpeakerFilter:
             processing_thread.join(timeout=1.0)
             keyboard_thread.join(timeout=0.5)
             input_handler.restore()
-            print(f"Processor stopped. Total samples processed: {self.samples_processed}")
+            
+            # Show final statistics
+            print(f"\n📊 FINAL STATISTICS:")
+            print(f"   Total samples processed: {self.samples_processed}")
+            print(f"   {self.speaker_tracker.get_fail_safe_stats()}")
+            print(f"   Consecutive matches: {self.speaker_tracker.consecutive_matches}")
+            print(f"   Fail-safe activations: {self.speaker_tracker.stats['fail_safe_activations']}")
+            
+            print(f"\nProcessor stopped.")
 
 # ============================================
 # MAIN FUNCTION
 # ============================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Real-time audio denoiser with speaker filtering")
+    parser = argparse.ArgumentParser(description="Real-time audio denoiser with speaker filtering and fail-safe")
     parser.add_argument("--denoise-model", default="denoiser_ckpt.pt", help="Path to denoising model")
     parser.add_argument("--vad-model", default=None, help="Path to VAD model (optional)")
     parser.add_argument("--input-device", type=int, default=None, help="Input device ID")
@@ -1226,8 +1381,12 @@ def main():
                        help="Output gain (0.5-5.0)")
     parser.add_argument("--speaker-gain", type=float, default=2.0,
                        help="Gain applied to recognized speaker (1.0-10.0)")
-    parser.add_argument("--similarity-threshold", type=float, default=0.3,
+    parser.add_argument("--similarity-threshold", type=float, default=0.55,
                        help="Similarity threshold for speaker recognition (0.1-0.9)")
+    parser.add_argument("--fail-safe-matches", type=int, default=3,
+                       help="Number of consecutive matches to activate fail-safe")
+    parser.add_argument("--fail-safe-duration", type=int, default=5,
+                       help="Number of samples to pass in fail-safe mode")
     parser.add_argument("--debug-passthrough", action="store_true", 
                        help="Debug mode: skip all processing")
     
@@ -1241,6 +1400,7 @@ def main():
     print(f"  Speaker recognition: YOUR MODEL INTEGRATED")
     print(f"  Selection: BY SPEAKER ID")
     print(f"  Similarity threshold: {args.similarity_threshold}")
+    print(f"  FAIL-SAFE: {args.fail_safe_matches} matches → {args.fail_safe_duration} samples")
     print(f"  Input device: {args.input_device or 'default'}")
     print(f"  Output device: {args.output_device or 'default'}")
     print(f"  Sample rate: {SAMPLE_RATE} Hz")
@@ -1264,6 +1424,10 @@ def main():
         
         # Set the similarity threshold
         processor.speaker_tracker.recognizer.similarity_threshold = args.similarity_threshold
+        
+        # Set fail-safe parameters
+        processor.speaker_tracker.fail_safe_match_threshold = args.fail_safe_matches
+        processor.speaker_tracker.fail_safe_duration = args.fail_safe_duration
         
         processor.run(args.input_device, args.output_device)
     
