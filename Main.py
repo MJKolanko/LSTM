@@ -3129,7 +3129,7 @@ class MainWindow(QMainWindow):
                 channels = device['max_output_channels']
 
                 # Only output devices
-                if channels == 0:
+                if channels == 0 and "VB" not in device['name']:
                     continue
 
                 # Check if device is useful
