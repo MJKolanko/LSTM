@@ -1,0 +1,358 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SpeakerRegistrationWindow</class>
+ <widget class="QMainWindow" name="SpeakerRegistrationWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>477</width>
+    <height>633</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Rejestracja Nowego Mówcy</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <item>
+     <widget class="QGroupBox" name="groupBox_3">
+      <property name="title">
+       <string>Informacje o systemie</string>
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_3">
+       <item>
+        <widget class="QLabel" name="label_status">
+         <property name="text">
+          <string>⚙️ Inicjalizacja systemu...</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_device">
+         <property name="text">
+          <string>Urządzenie: CPU</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_separator">
+         <property name="text">
+          <string>Separator: Nieznaleziony</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QGroupBox" name="groupBox">
+      <property name="title">
+       <string>Dane mówcy</string>
+      </property>
+      <layout class="QFormLayout" name="formLayout">
+       <item row="0" column="0">
+        <widget class="QLabel" name="label">
+         <property name="text">
+          <string>Imię/nazwa mówcy:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QLineEdit" name="lineEdit_speaker_name">
+         <property name="placeholderText">
+          <string>Wprowadź imię lub nazwę</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QGroupBox" name="groupBox_2">
+      <property name="title">
+       <string>Źródło audio</string>
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_2">
+       <item>
+        <widget class="QTabWidget" name="tabWidget">
+         <property name="currentIndex">
+          <number>0</number>
+         </property>
+         <widget class="QWidget" name="tab_microphone">
+          <attribute name="title">
+           <string>🎤 Nagrywanie z mikrofonu</string>
+          </attribute>
+          <layout class="QVBoxLayout" name="verticalLayout_4">
+           <item>
+            <widget class="QGroupBox" name="groupBox_4">
+             <property name="title">
+              <string>Konfiguracja nagrywania</string>
+             </property>
+             <layout class="QGridLayout" name="gridLayout">
+              <item row="0" column="0">
+               <widget class="QLabel" name="label_2">
+                <property name="text">
+                 <string>Urządzenie wejściowe:</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QComboBox" name="comboBox_input_devices"/>
+              </item>
+              <item row="0" column="2">
+               <widget class="QPushButton" name="pushButton_refresh_devices">
+                <property name="text">
+                 <string>Odśwież listę</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="label_3">
+                <property name="text">
+                 <string>Tryb nagrywania:</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QComboBox" name="comboBox_recording_mode">
+                <item>
+                 <property name="text">
+                  <string>Nagrywanie przez czas</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Nagrywanie do zatrzymania</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="1" column="2">
+               <widget class="QSpinBox" name="spinBox_duration">
+                <property name="suffix">
+                 <string> sekund</string>
+                </property>
+                <property name="minimum">
+                 <number>10</number>
+                </property>
+                <property name="maximum">
+                 <number>600</number>
+                </property>
+                <property name="value">
+                 <number>30</number>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="0">
+               <widget class="QLabel" name="label_4">
+                <property name="text">
+                 <string>Opcje przetwarzania:</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="QCheckBox" name="checkBox_use_separator">
+                <property name="text">
+                 <string>Użyj separatora audio</string>
+                </property>
+                <property name="checked">
+                 <bool>true</bool>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="2">
+               <widget class="QCheckBox" name="checkBox_debug">
+                <property name="text">
+                 <string>Tryb debug</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="horizontalLayout">
+             <item>
+              <widget class="QPushButton" name="pushButton_start_recording">
+               <property name="text">
+                <string>▶ Rozpocznij nagrywanie</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="pushButton_stop_recording">
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
+               <property name="text">
+                <string>⏹ Zatrzymaj nagrywanie</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="pushButton_preview">
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
+               <property name="toolTip">
+                <string>Odtwórz podgląd przetworzonego audio</string>
+               </property>
+               <property name="text">
+                <string>🔊 Podgląd</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QProgressBar" name="progressBar_recording">
+             <property name="value">
+              <number>0</number>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="label_recording_status">
+             <property name="text">
+              <string>Gotowy do nagrywania</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+         <widget class="QWidget" name="tab_files">
+          <attribute name="title">
+           <string>💾 Wczytywanie z plików</string>
+          </attribute>
+          <layout class="QVBoxLayout" name="verticalLayout_5">
+           <item>
+            <widget class="QGroupBox" name="groupBox_5">
+             <property name="title">
+              <string>Pliki audio</string>
+             </property>
+             <layout class="QVBoxLayout" name="verticalLayout_6">
+              <item>
+               <widget class="QListWidget" name="listWidget_audio_files"/>
+              </item>
+              <item>
+               <layout class="QHBoxLayout" name="horizontalLayout_2">
+                <item>
+                 <widget class="QPushButton" name="pushButton_add_files">
+                  <property name="text">
+                   <string>Dodaj pliki...</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="pushButton_remove_files">
+                  <property name="text">
+                   <string>Usuń wybrane</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="pushButton_clear_files">
+                  <property name="text">
+                   <string>Wyczyść listę</string>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="checkBox_use_separator_files">
+             <property name="text">
+              <string>Przetwórz pliki przez separator</string>
+             </property>
+             <property name="checked">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QGroupBox" name="groupBox_6">
+      <property name="title">
+       <string>Podgląd i informacje</string>
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_7">
+       <item>
+        <widget class="QTextEdit" name="textEdit_log">
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+         <property name="placeholderText">
+          <string>Logi systemowe będą wyświetlane tutaj...</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_audio_info">
+         <property name="text">
+          <string>Brak danych audio</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_3">
+      <item>
+       <widget class="QPushButton" name="pushButton_register">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>📝 Zarejestruj mówcę</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_play_samples">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>🎧 Odsłuchaj próbki</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="horizontalSpacer">
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_exit">
+        <property name="text">
+         <string>Zamknij</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>661</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Wybierz Mówcę</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <item>
+     <layout class="QGridLayout" name="gridLayout_2">
+      <item row="2" column="0">
+       <widget class="QComboBox" name="OutputDv"/>
+      </item>
+      <item row="0" column="0">
+       <widget class="QComboBox" name="InputDv"/>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLabel" name="OutputDvLabel">
+        <property name="text">
+         <string>Urządzenie Wyjścia</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLabel" name="InputDvLabel">
+        <property name="text">
+         <string>Urządzenie Wejścia</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QTextEdit" name="ConsoleOutput">
+      <property name="readOnly">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout">
+      <item>
+       <widget class="QLabel" name="Status">
+        <property name="text">
+         <string>INFO</string>
+        </property>
+        <property name="textFormat">
+         <enum>Qt::TextFormat::AutoText</enum>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignmentFlag::AlignCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="horizontalSpacer">
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QLabel" name="label">
+        <property name="text">
+         <string>Obecny Mówca:</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLineEdit" name="lineEdit"/>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_2">
+      <item>
+       <widget class="QPushButton" name="OnButton">
+        <property name="text">
+         <string>Włącz</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="checkBox">
+        <property name="text">
+         <string>DebugMode</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QPushButton" name="OffButton">
+      <property name="text">
+       <string>Wyłącz</string>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>520</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuParametry">
+    <property name="title">
+     <string>Parametry</string>
+    </property>
+    <addaction name="ConfigureParameters"/>
+    <addaction name="RestoreDefaultParameters"/>
+   </widget>
+   <widget class="QMenu" name="menuRejestracja">
+    <property name="title">
+     <string>Rejestracja</string>
+    </property>
+    <addaction name="RegisterSpeaker"/>
+   </widget>
+   <addaction name="menuParametry"/>
+   <addaction name="menuRejestracja"/>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+  <action name="AddSpeaker">
+   <property name="text">
+    <string>Dodaj Mówcę</string>
+   </property>
+  </action>
+  <action name="DeleteSpeaker">
+   <property name="text">
+    <string>Usuń Mówcę</string>
+   </property>
+  </action>
+  <action name="ConfigureParameters">
+   <property name="text">
+    <string>Konfiguruj Parametry</string>
+   </property>
+  </action>
+  <action name="RestoreDefaultParameters">
+   <property name="text">
+    <string>Przywróć Domyślne</string>
+   </property>
+  </action>
+  <action name="RegisterSpeaker">
+   <property name="text">
+    <string>Rejestrój Mówcę</string>
+   </property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

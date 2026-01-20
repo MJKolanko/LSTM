@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Prosty rejestrator mówcy z monitoringiem na żywo
-Nagrywa audio i natychmiast odtwarza na domyślnym głośniku
-WINDOWS COMPATIBLE VERSION
+GUI do rejestracji mówcy z monitoringiem na żywo
+Używając PySide6 i QUiLoader
 """
 
 import os
@@ -19,19 +18,21 @@ import time
 import sys
 import platform
 import datetime
+from pathlib import Path
+
+# PySide6 imports
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QComboBox, QTextEdit, QCheckBox, QLineEdit,
+    QSpinBox, QProgressBar, QListWidget, QGroupBox, QFormLayout,
+    QGridLayout, QMessageBox, QFileDialog, QTabWidget
+)
+from PySide6.QtUiTools import QUiLoader
+from PySide6.QtCore import QFile, QObject, Signal, QThread, Slot, QTimer, Qt
+from PySide6.QtGui import QTextCursor
 
 # Check platform
 IS_WINDOWS = platform.system() == "Windows"
-
-# Platform-specific imports
-if IS_WINDOWS:
-    import msvcrt
-else:
-    # Unix-specific imports
-    import select
-    import termios
-    import tty
-    import fcntl
 
 
 # Model (taki sam jak w testach)
@@ -77,7 +78,7 @@ class SpeakerEncoder(nn.Module):
 
 
 def extract_features(audio, sr=16000):
-    """Ekstrakcja cech MFCC - bez restrykcji"""
+    """Ekstrakcja cech MFCC"""
     if np.max(np.abs(audio)) > 0:
         audio = audio / (np.max(np.abs(audio)) + 1e-8)
 
@@ -96,7 +97,7 @@ def extract_features(audio, sr=16000):
     features = np.vstack([mfcc, mfcc_delta, mfcc_delta2])
     features_tensor = torch.FloatTensor(features).unsqueeze(0)
 
-    # Prosta normalizacja
+    # Normalizacja
     mean = features_tensor.mean(dim=2, keepdim=True)
     std = features_tensor.std(dim=2, keepdim=True) + 1e-8
     features_tensor = (features_tensor - mean) / std
@@ -104,628 +105,741 @@ def extract_features(audio, sr=16000):
     return features_tensor
 
 
-class LiveMonitorRecorder:
-    """Nagrywarka z odsłuchem na żywo"""
+class RecordingThread(QThread):
+    """Wątek do nagrywania audio z monitoringiem"""
+    update_progress = Signal(int)
+    update_status = Signal(str)
+    recording_finished = Signal(list)
+    recording_error = Signal(str)
 
-    def __init__(self, sample_rate=16000, monitor_gain=1.0):
-        self.sample_rate = sample_rate
+    def __init__(self, device_id=None, duration=None, monitor_gain=1.0):
+        super().__init__()
+        self.device_id = device_id
+        self.duration = duration
         self.monitor_gain = monitor_gain
-        self.recording = False
+        self.is_recording = False
         self.audio_data = []
-        self.is_running = True
+        self.sample_rate = 16000
 
-        # Bufor dla odsłuchu
-        self.monitor_buffer = queue.Queue()
-
-        # Strumień wyjściowy dla monitoringu
-        self.output_stream = None
-
-        print(f"🎧 Monitoring: WŁĄCZONY (wzmocnienie: {monitor_gain}x)")
-
-    def input_callback(self, indata, frames, time_info, status):
-        """Callback wejściowy - zbiera i odtwarza dźwięk"""
-        if status:
-            print(f"Input status: {status}")
-
-        if self.recording:
-            # Pobierz dane audio
-            chunk = indata.copy().flatten()
-
-            # Zapisz do historii
-            self.audio_data.append(chunk.copy())
-
-            # Dodaj do bufora monitoringu (z wzmocnieniem)
-            if self.monitor_gain != 1.0:
-                chunk = chunk * self.monitor_gain
-                chunk = np.clip(chunk, -1.0, 1.0)
-
-            self.monitor_buffer.put(chunk)
-
-    def output_callback(self, outdata, frames, time_info, status):
-        """Callback wyjściowy - odtwarza dźwięk na głośniku"""
-        if status:
-            print(f"Output status: {status}")
-
+    def run(self):
+        """Główna funkcja wątku nagrywania"""
         try:
-            # Pobierz dane z bufora
-            chunk = self.monitor_buffer.get_nowait()
+            self.update_status.emit("🔴 Rozpoczynanie nagrywania...")
+            self.audio_data = []
+            self.is_recording = True
 
-            # Upewnij się, że chunk ma właściwy rozmiar
-            if len(chunk) < frames:
-                chunk = np.pad(chunk, (0, frames - len(chunk)), mode='constant')
-            elif len(chunk) > frames:
-                chunk = chunk[:frames]
+            # Bufor dla monitoringu
+            monitor_buffer = queue.Queue()
 
-            # Wyślij do głośnika
-            outdata[:, 0] = chunk
+            def input_callback(indata, frames, time_info, status):
+                """Callback wejściowy"""
+                if self.is_recording:
+                    chunk = indata.copy().flatten()
+                    self.audio_data.append(chunk.copy())
 
-        except queue.Empty:
-            # Brak danych - cisza
-            outdata.fill(0)
+                    # Dodaj do monitoringu z wzmocnieniem
+                    if self.monitor_gain != 1.0:
+                        chunk = chunk * self.monitor_gain
+                        chunk = np.clip(chunk, -1.0, 1.0)
 
-    def start_recording(self, duration_seconds=None):
-        """Rozpoczyna nagrywanie z odsłuchem na żywo"""
-        print(f"\n🎤 Rozpoczynam nagrywanie z monitoringiem na żywo...")
+                    monitor_buffer.put(chunk)
 
-        if duration_seconds:
-            print(f"⏱️  Nagrywanie potrwa {duration_seconds} sekund")
-        else:
-            print("⏱️  Nagrywanie do momentu naciśnięcia klawisza 's'")
-
-        self.recording = True
-        self.audio_data = []
-
-        # Uruchom strumienie
-        input_stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype='float32',
-            callback=self.input_callback
-        )
-
-        output_stream = sd.OutputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype='float32',
-            callback=self.output_callback
-        )
-
-        input_stream.start()
-        output_stream.start()
-
-        print("\n🎙️  MÓW TERAZ...")
-        print("   Słyszysz swój głos na głośniku")
-
-        if duration_seconds:
-            print("   Naciśnij 's' aby zatrzymać wcześniej")
-        else:
-            print("   Naciśnij 's' aby zatrzymać")
-
-        start_time = time.time()
-
-        # Windows implementation
-        if IS_WINDOWS:
-            try:
-                while self.recording and self.is_running:
-                    # Sprawdź klawisz
-                    if msvcrt.kbhit():
-                        key = msvcrt.getch()
-                        if isinstance(key, bytes):
-                            # Try to decode
-                            try:
-                                key = key.decode('utf-8')
-                            except UnicodeDecodeError:
-                                key = key.decode('latin-1')
-
-                        if key == 's' or key == 'S':
-                            print("\n⏹️  Zatrzymywanie nagrywania...")
-                            self.recording = False
-                            break
-
-                    # Sprawdź limit czasu
-                    if duration_seconds and (time.time() - start_time) >= duration_seconds:
-                        print(f"\n⏰ Upłynął limit czasu {duration_seconds} sekund")
-                        self.recording = False
-                        break
-
-                    # Pokaż postęp
-                    elapsed = time.time() - start_time
-                    if duration_seconds:
-                        progress = min(1.0, elapsed / duration_seconds)
-                        sys.stdout.write(f"\r📊 Postęp: {progress * 100:.1f}% ({elapsed:.1f}s / {duration_seconds}s)")
-                    else:
-                        sys.stdout.write(f"\r⏱️  Nagrywanie: {elapsed:.1f} sekund... (naciśnij 's' aby zatrzymać)")
-                    sys.stdout.flush()
-
-                    time.sleep(0.1)
-
-            except Exception as e:
-                print(f"\n❌ Błąd: {e}")
-
-        else:  # Unix implementation
-            # Konfiguracja klawiatury nieblokującej
-            old_settings = termios.tcgetattr(sys.stdin)
-            try:
-                tty.setcbreak(sys.stdin.fileno())
-
-                fd = sys.stdin.fileno()
-                fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-                fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-
-                while self.recording and self.is_running:
-                    # Sprawdź klawisz
-                    if select.select([sys.stdin], [], [], 0)[0]:
-                        key = sys.stdin.read(1)
-                        if key == 's' or key == 'S':
-                            print("\n⏹️  Zatrzymywanie nagrywania...")
-                            self.recording = False
-                            break
-
-                    # Sprawdź limit czasu
-                    if duration_seconds and (time.time() - start_time) >= duration_seconds:
-                        print(f"\n⏰ Upłynął limit czasu {duration_seconds} sekund")
-                        self.recording = False
-                        break
-
-                    # Pokaż postęp
-                    elapsed = time.time() - start_time
-                    if duration_seconds:
-                        progress = min(1.0, elapsed / duration_seconds)
-                        sys.stdout.write(f"\r📊 Postęp: {progress * 100:.1f}% ({elapsed:.1f}s / {duration_seconds}s)")
-                    else:
-                        sys.stdout.write(f"\r⏱️  Nagrywanie: {elapsed:.1f} sekund... (naciśnij 's' aby zatrzymać)")
-                    sys.stdout.flush()
-
-                    time.sleep(0.1)
-
-            finally:
-                # Przywróć ustawienia terminala
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-
-        # Zatrzymaj strumienie
-        input_stream.stop()
-        input_stream.close()
-        output_stream.stop()
-        output_stream.close()
-
-        # Połącz wszystkie chunki
-        if self.audio_data:
-            full_audio = np.concatenate(self.audio_data)
-            recording_length = len(full_audio) / self.sample_rate
-            print(f"\n✅ Nagrano {recording_length:.2f} sekund audio")
-            return full_audio
-        else:
-            print("\n❌ Nie nagrano żadnych danych")
-            return None
-
-    def stop(self):
-        """Zatrzymuje nagrywanie"""
-        self.is_running = False
-        self.recording = False
-
-
-def register_speaker_simple(name, audio_segments, model, min_segments=2):
-    """Prosta rejestracja mówcy - bez weryfikacji"""
-
-    print(f"\n📝 Rejestracja mówcy: {name}")
-
-    if not audio_segments:
-        print("❌ Brak danych audio")
-        return False
-
-    # Wczytaj lub utwórz bazę danych
-    db_path = "./speaker_database.pkl"
-    if os.path.exists(db_path):
-        try:
-            with open(db_path, 'rb') as f:
-                database = pickle.load(f)
-            print(f"📊 Istniejąca baza: {len(database.get('speakers', {}))} mówców")
-        except:
-            database = {'speakers': {}, 'speaker_names': {}}
-    else:
-        database = {'speakers': {}, 'speaker_names': {}}
-        print("📊 Nowa baza danych utworzona")
-
-    # Znajdź nowe ID
-    existing_ids = list(database['speakers'].keys())
-    if existing_ids:
-        # Najprostsze ID
-        new_id = str(len(existing_ids))
-    else:
-        new_id = "0"
-
-    print(f"🆔 ID mówcy: {new_id}")
-
-    # Zbierz embeddingi z segmentów
-    embeddings = []
-    device = next(model.parameters()).device
-
-    print(f"\n🔍 Przetwarzanie {len(audio_segments)} segmentów...")
-    for i, audio_segment in enumerate(audio_segments):
-        segment_length = len(audio_segment) / 16000
-
-        try:
-            # Ekstrakcja cech
-            features = extract_features(audio_segment)
-            features = features.to(device)
-
-            # Pobierz embedding
-            model.eval()
-            with torch.no_grad():
-                embedding = model(features).squeeze(0).cpu()
-
-            embeddings.append(embedding)
-            print(f"  ✅ Segment {i + 1}: {segment_length:.1f}s - OK")
-
-        except Exception as e:
-            print(f"  ⚠️  Segment {i + 1}: błąd - {str(e)[:50]}...")
-            continue
-
-    if len(embeddings) < min_segments:
-        print(f"❌ Za mało segmentów: {len(embeddings)}/{min_segments}")
-        print("   Spróbuj nagrać dłuższe audio")
-        return False
-
-    # Uśrednij embeddingi
-    stacked = torch.stack(embeddings, dim=0)
-    final_embedding = torch.mean(stacked, dim=0)
-    final_embedding = F.normalize(final_embedding.unsqueeze(0), p=2, dim=1).squeeze(0)
-
-    # Zapisz do bazy
-    database['speakers'][new_id] = final_embedding
-    database['speaker_names'][new_id] = name
-
-    # Zapisz bazę
-    try:
-        with open(db_path, 'wb') as f:
-            pickle.dump(database, f)
-
-        print(f"\n✅ Zarejestrowano mówcę '{name}' z ID: {new_id}")
-        print(f"   Embedding: {final_embedding.shape}")
-        print(f"   Użyte segmenty: {len(embeddings)}")
-
-        # Tworzenie kopii zapasowej
-        backup_path = f"./speaker_database_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl"
-        with open(backup_path, 'wb') as f:
-            pickle.dump(database, f)
-
-        return True
-
-    except Exception as e:
-        print(f"❌ Błąd zapisu: {e}")
-        return False
-
-
-def record_with_monitoring(min_duration=5, target_segment_duration=3):
-    """Nagrywa z mikrofonu z odsłuchem na żywo"""
-
-    print("\n" + "=" * 50)
-    print("🎤 NAGRYWANIE Z MONITORINGIEM NA ŻYWO")
-    print("=" * 50)
-
-    # Wybór trybu nagrywania
-    print("\n📋 Wybierz tryb nagrywania:")
-    print("   1. Nagrywanie przez określoną liczbę sekund")
-    print("   2. Nagrywanie do momentu naciśnięcia klawisza")
-    print("   3. Test odsłuchu (bez zapisywania)")
-
-    choice = input("\nWybierz opcję (1-3): ").strip()
-
-    # Wybór wzmocnienia monitoringu
-    gain_choice = input("\n🎚️  Wzmocnienie monitoringu (domyślnie 1.0): ").strip()
-    monitor_gain = float(gain_choice) if gain_choice else 1.0
-
-    recorder = LiveMonitorRecorder(sample_rate=16000, monitor_gain=monitor_gain)
-
-    try:
-        if choice == '1':
-            # Tryb z limitem czasu
-            while True:
+            def output_callback(outdata, frames, time_info, status):
+                """Callback wyjściowy"""
                 try:
-                    duration = int(input("\n⌛ Podaj czas nagrywania w sekundach (minimum 5): ").strip())
-                    if duration >= 5:
-                        break
-                    else:
-                        print("❌ Czas musi być co najmniej 5 sekund")
-                except ValueError:
-                    print("❌ Wprowadź prawidłową liczbę")
+                    chunk = monitor_buffer.get_nowait()
+                    if len(chunk) < frames:
+                        chunk = np.pad(chunk, (0, frames - len(chunk)), mode='constant')
+                    elif len(chunk) > frames:
+                        chunk = chunk[:frames]
+                    outdata[:, 0] = chunk
+                except queue.Empty:
+                    outdata.fill(0)
 
-            print(f"\n🔴 Rozpoczynam nagrywanie na {duration} sekund...")
-            print("   Słyszysz swój głos na głośniku")
-            time.sleep(2)
-
-            # Nagraj audio
-            full_audio = recorder.start_recording(duration_seconds=duration)
-
-        elif choice == '2':
-            # Tryb bez limitu czasu
-            print("\n🔴 Rozpoczynam nagrywanie...")
-            print("   Słyszysz swój głos na głośniku")
-            print("   Naciśnij 's' gdy skończysz mówić")
-            print("   Minimalny czas: 5 sekund")
-            time.sleep(2)
-
-            # Nagraj audio
-            full_audio = recorder.start_recording(duration_seconds=None)
-
-        elif choice == '3':
-            # Tryb testowy - tylko odsłuch
-            print("\n🔊 TRYB TESTOWY - TYLKO ODSŁUCH")
-            print("   Sprawdzasz działanie mikrofonu i głośnika")
-            print("   Mów do mikrofonu - słyszysz się na głośniku")
-            print("   Naciśnij 's' aby zakończyć test")
-            print("   Nic nie jest zapisywane!")
-
-            input("\nNaciśnij Enter aby rozpocząć test...")
-
-            # Uruchom tylko monitoring
-            recorder.recording = True
-            recorder.is_running = True
-
-            # Konfiguracja strumieni
+            # Uruchom strumienie
             input_stream = sd.InputStream(
-                samplerate=16000,
+                device=self.device_id,
+                samplerate=self.sample_rate,
                 channels=1,
                 dtype='float32',
-                callback=recorder.input_callback
+                callback=input_callback
             )
 
             output_stream = sd.OutputStream(
-                samplerate=16000,
+                samplerate=self.sample_rate,
                 channels=1,
                 dtype='float32',
-                callback=recorder.output_callback
+                callback=output_callback
             )
 
             input_stream.start()
             output_stream.start()
 
-            print("\n🎧 TEST ODSŁUCHU ROZPOCZĘTY")
-            print("   Mów do mikrofonu...")
-            print("   Naciśnij 's' aby zakończyć")
+            start_time = time.time()
+            last_update = start_time
 
-            # Windows implementation
-            if IS_WINDOWS:
-                try:
-                    while recorder.is_running:
-                        if msvcrt.kbhit():
-                            key = msvcrt.getch()
-                            if isinstance(key, bytes):
-                                try:
-                                    key = key.decode('utf-8')
-                                except UnicodeDecodeError:
-                                    key = key.decode('latin-1')
+            while self.is_recording:
+                elapsed = time.time() - start_time
 
-                            if key == 's' or key == 'S':
-                                print("\n⏹️  Zakończono test odsłuchu")
-                                break
+                # Aktualizuj postęp
+                if time.time() - last_update > 0.1:
+                    if self.duration:
+                        progress = min(100, int((elapsed / self.duration) * 100))
+                        self.update_progress.emit(progress)
+                        self.update_status.emit(f"Nagrywanie: {elapsed:.1f}s / {self.duration}s")
+                    else:
+                        self.update_status.emit(f"Nagrywanie: {elapsed:.1f}s (naciśnij STOP)")
 
-                        time.sleep(0.1)
-                except Exception as e:
-                    print(f"❌ Błąd: {e}")
-            else:  # Unix implementation
-                # Prosta pętla z klawiszem
-                old_settings = termios.tcgetattr(sys.stdin)
-                try:
-                    tty.setcbreak(sys.stdin.fileno())
+                    last_update = time.time()
 
-                    while recorder.is_running:
-                        if select.select([sys.stdin], [], [], 0)[0]:
-                            key = sys.stdin.read(1)
-                            if key == 's' or key == 'S':
-                                print("\n⏹️  Zakończono test odsłuchu")
-                                break
+                # Sprawdź czy upłynął czas
+                if self.duration and elapsed >= self.duration:
+                    self.is_recording = False
+                    break
 
-                        time.sleep(0.1)
+                time.sleep(0.05)
 
-                finally:
-                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-
+            # Zatrzymaj strumienie
             input_stream.stop()
             input_stream.close()
             output_stream.stop()
             output_stream.close()
 
-            print("\n✅ Test zakończony")
+            # Połącz dane
+            if self.audio_data:
+                full_audio = np.concatenate(self.audio_data)
+                duration = len(full_audio) / self.sample_rate
+                self.update_status.emit(f"✅ Nagrano {duration:.1f} sekund audio")
+
+                # Podziel na segmenty (3 sekundy z 50% overlap)
+                segment_length = 3 * self.sample_rate
+                hop_length = int(1.5 * self.sample_rate)
+                segments = []
+
+                for start in range(0, len(full_audio) - segment_length + 1, hop_length):
+                    segment = full_audio[start:start + segment_length]
+                    segments.append(segment)
+
+                self.recording_finished.emit(segments)
+            else:
+                self.recording_error.emit("Nie nagrano żadnych danych")
+
+        except Exception as e:
+            self.recording_error.emit(f"Błąd nagrywania: {str(e)}")
+
+    def stop_recording(self):
+        """Zatrzymaj nagrywanie"""
+        self.is_recording = False
+
+
+class RegistrationWindow(QMainWindow):
+    """Główne okno rejestracji mówcy"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.load_ui()
+        self.setup_ui()
+        self.setup_connections()
+
+        # Inicjalizacja zmiennych
+        self.speaker_audio_segments = []
+        self.model = None
+        self.recording_thread = None
+        self.recording_device_id = None
+
+        # Załaduj model
+        self.load_model()
+
+        # Wypełnij listę urządzeń
+        self.refresh_device_list()
+
+    def load_ui(self):
+        """Ładuje UI z pliku .ui"""
+        try:
+            loader = QUiLoader()
+            ui_file = "RegisterMenu.ui"
+
+            if not os.path.exists(ui_file):
+                raise FileNotFoundError(f"Nie znaleziono pliku UI: {ui_file}")
+
+            file = QFile(ui_file)
+            if not file.open(QFile.ReadOnly):
+                raise IOError(f"Nie można otworzyć pliku: {ui_file}")
+
+            self.ui = loader.load(file, self)
+            file.close()
+
+            if self.ui:
+                self.setCentralWidget(self.ui.centralwidget)
+            else:
+                raise ValueError("Błąd ładowania UI")
+
+        except Exception as e:
+            print(f"Błąd ładowania UI: {e}")
+            # Tworzenie awaryjnego UI
+            self.create_fallback_ui()
+
+    def create_fallback_ui(self):
+        """Tworzy awaryjne UI jeśli ładowanie się nie powiedzie"""
+        self.ui = QWidget()
+        self.setCentralWidget(self.ui)
+        layout = QVBoxLayout(self.ui)
+
+        self.ui.textEdit_log = QTextEdit()
+        self.ui.textEdit_log.setReadOnly(True)
+        layout.addWidget(self.ui.textEdit_log)
+
+        self.ui.label_status = QLabel("Błąd ładowania UI")
+        layout.addWidget(self.ui.label_status)
+
+    def setup_ui(self):
+        """Inicjalizacja interfejsu"""
+        # Ustaw tytuł okna
+        self.setWindowTitle("Rejestracja Nowego Mówcy")
+
+        # Ustaw domyślne wartości
+        if hasattr(self.ui, 'spinBox_duration'):
+            self.ui.spinBox_duration.setValue(30)
+
+        # Zablokuj przyciski które wymagają danych
+        if hasattr(self.ui, 'pushButton_register'):
+            self.ui.pushButton_register.setEnabled(False)
+
+        if hasattr(self.ui, 'pushButton_play_samples'):
+            self.ui.pushButton_play_samples.setEnabled(False)
+
+    def setup_connections(self):
+        """Konfiguruje połączenia między sygnałami a slotami"""
+        # Przyciski nagrywania
+        if hasattr(self.ui, 'pushButton_start_recording'):
+            self.ui.pushButton_start_recording.clicked.connect(self.start_recording)
+
+        if hasattr(self.ui, 'pushButton_stop_recording'):
+            self.ui.pushButton_stop_recording.clicked.connect(self.stop_recording)
+
+        if hasattr(self.ui, 'pushButton_preview'):
+            self.ui.pushButton_preview.clicked.connect(self.preview_audio)
+
+        # Przyciski plików
+        if hasattr(self.ui, 'pushButton_add_files'):
+            self.ui.pushButton_add_files.clicked.connect(self.add_audio_files)
+
+        if hasattr(self.ui, 'pushButton_remove_files'):
+            self.ui.pushButton_remove_files.clicked.connect(self.remove_audio_files)
+
+        if hasattr(self.ui, 'pushButton_clear_files'):
+            self.ui.pushButton_clear_files.clicked.connect(self.clear_audio_files)
+
+        # Przyciski główne
+        if hasattr(self.ui, 'pushButton_register'):
+            self.ui.pushButton_register.clicked.connect(self.register_speaker)
+
+        if hasattr(self.ui, 'pushButton_play_samples'):
+            self.ui.pushButton_play_samples.clicked.connect(self.play_samples)
+
+        if hasattr(self.ui, 'pushButton_exit'):
+            self.ui.pushButton_exit.clicked.connect(self.close)
+
+        if hasattr(self.ui, 'pushButton_refresh_devices'):
+            self.ui.pushButton_refresh_devices.clicked.connect(self.refresh_device_list)
+
+        # Zmiana w polu nazwy mówcy
+        if hasattr(self.ui, 'lineEdit_speaker_name'):
+            self.ui.lineEdit_speaker_name.textChanged.connect(self.update_register_button)
+
+    def load_model(self):
+        """Ładuje model rozpoznawania mówców"""
+        try:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+            # Zaktualizuj informacje o systemie
+            if hasattr(self.ui, 'label_status'):
+                self.ui.label_status.setText("⚙️ Ładowanie modelu...")
+
+            if hasattr(self.ui, 'label_device'):
+                self.ui.label_device.setText(f"Urządzenie: {str(device).upper()}")
+
+            # Ścieżka do modelu
+            model_path = "./speaker_models/final_model.pt"
+
+            if os.path.exists(model_path):
+                self.log_message(f"📦 Wczytywanie modelu z {model_path}")
+                self.model = SpeakerEncoder().to(device)
+
+                try:
+                    checkpoint = torch.load(model_path, map_location=device)
+                    if 'model_state_dict' in checkpoint:
+                        self.model.load_state_dict(checkpoint['model_state_dict'])
+                    else:
+                        self.model.load_state_dict(checkpoint)
+
+                    self.model.eval()
+                    self.log_message("✅ Model załadowany pomyślnie")
+
+                except Exception as e:
+                    self.log_message(f"⚠️ Błąd ładowania modelu: {e}")
+                    self.log_message("⚠️ Tworzenie nowego modelu")
+                    self.model = SpeakerEncoder().to(device)
+            else:
+                self.log_message("⚠️ Model nie znaleziony - tworzę nowy")
+                self.model = SpeakerEncoder().to(device)
+
+            # Aktualizuj status
+            if hasattr(self.ui, 'label_status'):
+                self.ui.label_status.setText("✅ System gotowy")
+
+        except Exception as e:
+            self.log_message(f"❌ Krytyczny błąd ładowania modelu: {e}")
+
+    def refresh_device_list(self):
+        """Odświeża listę dostępnych urządzeń"""
+        try:
+            devices = sd.query_devices()
+
+            if hasattr(self.ui, 'comboBox_input_devices'):
+                combo_box = self.ui.comboBox_input_devices
+                combo_box.clear()
+
+                # Dodaj domyślne urządzenie
+                default_input = sd.default.device[0]
+                default_device = devices[default_input] if default_input < len(devices) else None
+
+                if default_device and default_device['max_input_channels'] > 0:
+                    name = default_device['name']
+                    if len(name) > 40:
+                        name = name[:37] + "..."
+                    combo_box.addItem(f"⭐ {name} (domyślne)", default_input)
+
+                # Dodaj inne urządzenia wejściowe
+                for i, device in enumerate(devices):
+                    if i == default_input:
+                        continue
+
+                    if device['max_input_channels'] > 0:
+                        name = device['name']
+                        if len(name) > 40:
+                            name = name[:37] + "..."
+                        combo_box.addItem(f"🎤 {name}", i)
+
+                if combo_box.count() == 0:
+                    combo_box.addItem("❌ Brak urządzeń wejściowych", None)
+
+                self.log_message(f"📋 Znaleziono {combo_box.count()} urządzeń wejściowych")
+
+        except Exception as e:
+            self.log_message(f"❌ Błąd ładowania urządzeń: {e}")
+
+    def log_message(self, message):
+        """Dodaje wiadomość do logu"""
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        formatted_message = f"[{timestamp}] {message}"
+
+        if hasattr(self.ui, 'textEdit_log'):
+            self.ui.textEdit_log.append(formatted_message)
+
+            # Przewiń do dołu
+            cursor = self.ui.textEdit_log.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            self.ui.textEdit_log.setTextCursor(cursor)
+
+    def start_recording(self):
+        """Rozpoczyna nagrywanie"""
+        # Sprawdź nazwę mówcy
+        if not hasattr(self.ui, 'lineEdit_speaker_name') or not self.ui.lineEdit_speaker_name.text().strip():
+            QMessageBox.warning(self, "Brak nazwy", "Proszę wprowadzić imię/nazwę mówcy.")
+            return
+
+        # Pobierz ustawienia
+        if hasattr(self.ui, 'comboBox_recording_mode'):
+            mode = self.ui.comboBox_recording_mode.currentText()
+
+        duration = None
+        if hasattr(self.ui, 'spinBox_duration'):
+            if "przez czas" in mode:
+                duration = self.ui.spinBox_duration.value()
+
+        # Pobierz urządzenie
+        if hasattr(self.ui, 'comboBox_input_devices'):
+            device_id = self.ui.comboBox_input_devices.currentData()
+            if device_id is None:
+                QMessageBox.warning(self, "Brak urządzenia", "Nie wybrano urządzenia wejściowego.")
+                return
+
+        # Zablokuj przycisk start
+        if hasattr(self.ui, 'pushButton_start_recording'):
+            self.ui.pushButton_start_recording.setEnabled(False)
+
+        # Odblokuj przycisk stop
+        if hasattr(self.ui, 'pushButton_stop_recording'):
+            self.ui.pushButton_stop_recording.setEnabled(True)
+
+        # Zresetuj progress bar
+        if hasattr(self.ui, 'progressBar_recording'):
+            self.ui.progressBar_recording.setValue(0)
+
+        # Aktualizuj status
+        if hasattr(self.ui, 'label_recording_status'):
+            self.ui.label_recording_status.setText("Rozpoczynam nagrywanie...")
+
+        self.log_message("🎤 Rozpoczynam nagrywanie...")
+
+        # Uruchom wątek nagrywania
+        self.recording_thread = RecordingThread(
+            device_id=device_id,
+            duration=duration,
+            monitor_gain=1.0
+        )
+
+        self.recording_thread.update_progress.connect(self.update_recording_progress)
+        self.recording_thread.update_status.connect(self.update_recording_status)
+        self.recording_thread.recording_finished.connect(self.recording_finished)
+        self.recording_thread.recording_error.connect(self.recording_error)
+
+        self.recording_thread.start()
+
+    def stop_recording(self):
+        """Zatrzymuje nagrywanie"""
+        if self.recording_thread and self.recording_thread.isRunning():
+            self.recording_thread.stop_recording()
+            self.log_message("⏹️ Zatrzymywanie nagrywania...")
+
+    def update_recording_progress(self, progress):
+        """Aktualizuje pasek postępu"""
+        if hasattr(self.ui, 'progressBar_recording'):
+            self.ui.progressBar_recording.setValue(progress)
+
+    def update_recording_status(self, status):
+        """Aktualizuje status nagrywania"""
+        if hasattr(self.ui, 'label_recording_status'):
+            self.ui.label_recording_status.setText(status)
+
+    def recording_finished(self, audio_segments):
+        """Wywoływane po zakończeniu nagrywania"""
+        self.speaker_audio_segments = audio_segments
+
+        # Odblokuj przycisk start
+        if hasattr(self.ui, 'pushButton_start_recording'):
+            self.ui.pushButton_start_recording.setEnabled(True)
+
+        # Zablokuj przycisk stop
+        if hasattr(self.ui, 'pushButton_stop_recording'):
+            self.ui.pushButton_stop_recording.setEnabled(False)
+
+        # Odblokuj przycisk podglądu
+        if hasattr(self.ui, 'pushButton_preview'):
+            self.ui.pushButton_preview.setEnabled(len(audio_segments) > 0)
+
+        # Aktualizuj informacje o audio
+        if hasattr(self.ui, 'label_audio_info'):
+            total_duration = sum(len(seg) for seg in audio_segments) / 16000
+            self.ui.label_audio_info.setText(
+                f"Nagrane dane: {len(audio_segments)} segmentów, "
+                f"całkowity czas: {total_duration:.1f}s"
+            )
+
+        self.log_message(f"✅ Nagrano {len(audio_segments)} segmentów audio")
+        self.update_register_button()
+
+    def recording_error(self, error_message):
+        """Wywoływane przy błędzie nagrywania"""
+        self.log_message(f"❌ {error_message}")
+
+        # Przywróć stan przycisków
+        if hasattr(self.ui, 'pushButton_start_recording'):
+            self.ui.pushButton_start_recording.setEnabled(True)
+
+        if hasattr(self.ui, 'pushButton_stop_recording'):
+            self.ui.pushButton_stop_recording.setEnabled(False)
+
+        if hasattr(self.ui, 'label_recording_status'):
+            self.ui.label_recording_status.setText(f"Błąd: {error_message}")
+
+    def preview_audio(self):
+        """Odtwarza podgląd nagranego audio"""
+        if not self.speaker_audio_segments:
+            QMessageBox.information(self, "Brak danych", "Nie ma nagranych danych do odtworzenia.")
+            return
+
+        try:
+            # Połącz segmenty
+            full_audio = np.concatenate(self.speaker_audio_segments)
+
+            # Normalizuj
+            if np.max(np.abs(full_audio)) > 0:
+                full_audio = full_audio / np.max(np.abs(full_audio))
+
+            # Odtwórz
+            sd.play(full_audio, samplerate=16000)
+            sd.wait()
+
+            self.log_message("🔊 Odtworzono podgląd audio")
+
+        except Exception as e:
+            self.log_message(f"❌ Błąd odtwarzania: {e}")
+
+    def add_audio_files(self):
+        """Dodaje pliki audio z dysku"""
+        file_dialog = QFileDialog()
+        file_dialog.setNameFilter("Pliki audio (*.wav *.mp3 *.flac *.ogg *.m4a)")
+        file_dialog.setFileMode(QFileDialog.ExistingFiles)
+
+        if file_dialog.exec():
+            file_paths = file_dialog.selectedFiles()
+
+            if hasattr(self.ui, 'listWidget_audio_files'):
+                list_widget = self.ui.listWidget_audio_files
+
+                for file_path in file_paths:
+                    list_widget.addItem(file_path)
+                    self.log_message(f"📁 Dodano plik: {os.path.basename(file_path)}")
+
+            self.update_register_button()
+
+    def remove_audio_files(self):
+        """Usuwa wybrane pliki audio z listy"""
+        if hasattr(self.ui, 'listWidget_audio_files'):
+            list_widget = self.ui.listWidget_audio_files
+
+            for item in list_widget.selectedItems():
+                list_widget.takeItem(list_widget.row(item))
+                self.log_message(f"🗑️ Usunięto plik: {item.text()}")
+
+    def clear_audio_files(self):
+        """Czyści całą listę plików audio"""
+        if hasattr(self.ui, 'listWidget_audio_files'):
+            self.ui.listWidget_audio_files.clear()
+            self.log_message("🧹 Wyczyszczono listę plików")
+
+    def load_audio_file(self, filepath):
+        """Wczytuje plik audio"""
+        try:
+            audio, sr = librosa.load(filepath, sr=16000, mono=True)
+
+            # Normalizacja
+            if np.max(np.abs(audio)) > 0:
+                audio = audio / np.max(np.abs(audio))
+
+            return audio
+
+        except Exception as e:
+            self.log_message(f"❌ Błąd wczytywania {os.path.basename(filepath)}: {e}")
             return None
 
+    def update_register_button(self):
+        """Aktualizuje stan przycisku rejestracji"""
+        has_name = hasattr(self.ui, 'lineEdit_speaker_name') and self.ui.lineEdit_speaker_name.text().strip()
+        has_audio = len(self.speaker_audio_segments) > 0
+
+        if hasattr(self.ui, 'listWidget_audio_files'):
+            has_audio = has_audio or (self.ui.listWidget_audio_files.count() > 0)
+
+        if hasattr(self.ui, 'pushButton_register'):
+            self.ui.pushButton_register.setEnabled(has_name and has_audio)
+
+        if hasattr(self.ui, 'pushButton_play_samples'):
+            self.ui.pushButton_play_samples.setEnabled(has_audio)
+
+    def register_speaker(self):
+        """Rejestruje nowego mówcę"""
+        # Pobierz nazwę mówcy
+        if not hasattr(self.ui, 'lineEdit_speaker_name'):
+            QMessageBox.warning(self, "Błąd", "Pole nazwy mówcy nie istnieje.")
+            return
+
+        speaker_name = self.ui.lineEdit_speaker_name.text().strip()
+        if not speaker_name:
+            QMessageBox.warning(self, "Brak nazwy", "Proszę wprowadzić imię/nazwę mówcy.")
+            return
+
+        # Pobierz segmenty audio
+        audio_segments = self.speaker_audio_segments.copy()
+
+        # Sprawdź czy dodano pliki
+        if hasattr(self.ui, 'listWidget_audio_files'):
+            list_widget = self.ui.listWidget_audio_files
+
+            for i in range(list_widget.count()):
+                file_path = list_widget.item(i).text()
+                audio = self.load_audio_file(file_path)
+
+                if audio is not None:
+                    # Podziel na segmenty 3-sekundowe
+                    segment_length = 3 * 16000
+                    hop_length = int(1.5 * 16000)
+
+                    for start in range(0, len(audio) - segment_length + 1, hop_length):
+                        segment = audio[start:start + segment_length]
+                        audio_segments.append(segment)
+
+                    self.log_message(f"✅ Przetworzono plik: {os.path.basename(file_path)}")
+
+        if not audio_segments:
+            QMessageBox.warning(self, "Brak danych", "Nie ma danych audio do rejestracji.")
+            return
+
+        self.log_message(f"📝 Rejestracja mówcy: {speaker_name}")
+        self.log_message(f"📊 Liczba segmentów: {len(audio_segments)}")
+
+        # Wczytaj lub utwórz bazę danych
+        db_path = "./speaker_database.pkl"
+
+        if os.path.exists(db_path):
+            try:
+                with open(db_path, 'rb') as f:
+                    database = pickle.load(f)
+                self.log_message(f"📋 Istniejąca baza: {len(database.get('speakers', {}))} mówców")
+            except Exception as e:
+                self.log_message(f"⚠️ Błąd wczytywania bazy: {e}")
+                database = {'speakers': {}, 'speaker_names': {}}
         else:
-            print("❌ Nieprawidłowy wybór")
-            return None
+            database = {'speakers': {}, 'speaker_names': {}}
+            self.log_message("📋 Nowa baza danych utworzona")
 
-        if full_audio is None:
-            return None
+        # Znajdź nowe ID
+        existing_ids = list(database['speakers'].keys())
+        if existing_ids:
+            # Najprostsze ID
+            new_id = str(len(existing_ids))
+        else:
+            new_id = "0"
 
-        # Podziel na segmenty 3-sekundowe
-        segment_length = target_segment_duration * 16000
-        segments = []
+        self.log_message(f"🆔 ID mówcy: {new_id}")
 
-        # Przesuń okno co 1.5 sekundy (50% overlap)
-        hop_length = int(1.5 * 16000)
+        # Zbierz embeddingi z segmentów
+        embeddings = []
+        device = next(self.model.parameters()).device
 
-        for start in range(0, len(full_audio) - segment_length + 1, hop_length):
-            segment = full_audio[start:start + segment_length]
-            segments.append(segment)
+        for i, audio_segment in enumerate(audio_segments):
+            segment_length = len(audio_segment) / 16000
 
-        print(f"\n✂️  Podzielono nagranie na {len(segments)} segmentów")
+            try:
+                # Ekstrakcja cech
+                features = extract_features(audio_segment)
+                features = features.to(device)
 
-        return segments
+                # Pobierz embedding
+                with torch.no_grad():
+                    embedding = self.model(features).squeeze(0).cpu()
 
-    except KeyboardInterrupt:
-        print("\n\n⏹️  Nagrywanie przerwane przez użytkownika")
-        return None
-    except Exception as e:
-        print(f"❌ Błąd nagrywania: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-    finally:
-        recorder.stop()
+                embeddings.append(embedding)
 
+                if (i + 1) % 5 == 0 or i == len(audio_segments) - 1:
+                    self.log_message(f"  📊 Przetworzono {i + 1}/{len(audio_segments)} segmentów")
 
-def load_audio_file(filepath):
-    """Proste wczytywanie pliku audio"""
-    try:
-        audio, sr = librosa.load(filepath, sr=16000, mono=True)
+            except Exception as e:
+                self.log_message(f"  ⚠️ Segment {i + 1}: błąd - {str(e)[:50]}...")
+                continue
 
-        # Normalizacja
-        if np.max(np.abs(audio)) > 0:
-            audio = audio / np.max(np.abs(audio))
+        if len(embeddings) < 2:
+            error_msg = f"Za mało segmentów: {len(embeddings)}/2"
+            self.log_message(f"❌ {error_msg}")
+            QMessageBox.warning(self, "Za mało danych", error_msg + "\nSpróbuj nagrać dłuższe audio.")
+            return
 
-        return audio
-    except Exception as e:
-        print(f"Błąd wczytywania {filepath}: {e}")
-        return None
+        # Uśrednij embeddingi
+        stacked = torch.stack(embeddings, dim=0)
+        final_embedding = torch.mean(stacked, dim=0)
+        final_embedding = F.normalize(final_embedding.unsqueeze(0), p=2, dim=1).squeeze(0)
+
+        # Zapisz do bazy
+        database['speakers'][new_id] = final_embedding
+        database['speaker_names'][new_id] = speaker_name
+
+        # Zapisz bazę
+        try:
+            with open(db_path, 'wb') as f:
+                pickle.dump(database, f)
+
+            # Tworzenie kopii zapasowej
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = f"./speaker_database_backup_{timestamp}.pkl"
+            with open(backup_path, 'wb') as f:
+                pickle.dump(database, f)
+
+            success_msg = (
+                f"✅ Zarejestrowano mówcę '{speaker_name}' z ID: {new_id}\n"
+                f"   Embedding: {final_embedding.shape}\n"
+                f"   Użyte segmenty: {len(embeddings)}\n"
+                f"   Kopia zapasowa: {backup_path}"
+            )
+
+            self.log_message(success_msg)
+
+            # Wyświetl okno sukcesu
+            QMessageBox.information(
+                self,
+                "Rejestracja zakończona",
+                success_msg
+            )
+
+            # Resetuj dane
+            self.speaker_audio_segments = []
+
+            if hasattr(self.ui, 'listWidget_audio_files'):
+                self.ui.listWidget_audio_files.clear()
+
+            if hasattr(self.ui, 'label_audio_info'):
+                self.ui.label_audio_info.setText("Brak danych audio")
+
+            self.update_register_button()
+
+        except Exception as e:
+            error_msg = f"Błąd zapisu bazy danych: {e}"
+            self.log_message(f"❌ {error_msg}")
+            QMessageBox.critical(self, "Błąd zapisu", error_msg)
+
+    def play_samples(self):
+        """Odtwarza wszystkie próbki audio"""
+        if not self.speaker_audio_segments:
+            QMessageBox.information(self, "Brak danych", "Nie ma danych audio do odtworzenia.")
+            return
+
+        try:
+            # Połącz wszystkie segmenty
+            all_audio = []
+            for segment in self.speaker_audio_segments:
+                all_audio.append(segment)
+                # Dodaj krótką ciszę między segmentami
+                all_audio.append(np.zeros(int(0.5 * 16000)))
+
+            if all_audio:
+                full_audio = np.concatenate(all_audio)
+
+                # Normalizuj
+                if np.max(np.abs(full_audio)) > 0:
+                    full_audio = full_audio / np.max(np.abs(full_audio))
+
+                # Odtwórz
+                self.log_message("🔊 Odtwarzanie wszystkich próbek...")
+                sd.play(full_audio, samplerate=16000)
+                sd.wait()
+                self.log_message("✅ Zakończono odtwarzanie")
+
+        except Exception as e:
+            self.log_message(f"❌ Błąd odtwarzania: {e}")
+
+    def closeEvent(self, event):
+        """Obsługuje zamknięcie okna"""
+        # Zatrzymaj nagrywanie jeśli działa
+        if self.recording_thread and self.recording_thread.isRunning():
+            self.recording_thread.stop_recording()
+            self.recording_thread.wait(1000)
+
+        event.accept()
 
 
 def main():
-    print("=" * 60)
-    print("🎤 PROSTA REJESTRACJA MÓWCY Z MONITORINGIEM")
-    print("=" * 60)
-    print(f"📱 Platforma: {platform.system()} ({'Windows' if IS_WINDOWS else 'Unix/Linux'})")
+    """Główna funkcja uruchamiająca aplikację"""
+    import sys
 
-    # Sprawdź CUDA
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"⚙️  Device: {device}")
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
 
-    # Załaduj model
-    model_path = "./speaker_models/final_model.pt"
-    if not os.path.exists(model_path):
-        print("⚠️  Model nie znaleziony - tworzę nowy...")
-        model = SpeakerEncoder().to(device)
-        print("✅ Nowy model utworzony")
-    else:
-        print("📦 Wczytywanie modelu...")
-        model = SpeakerEncoder().to(device)
+    window = RegistrationWindow()
+    window.show()
 
-        try:
-            checkpoint = torch.load(model_path, map_location=device)
-            if 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-            else:
-                model.load_state_dict(checkpoint)
-            print("✅ Model załadowany")
-        except Exception as e:
-            print(f"⚠️  Błąd wczytywania - używam nowego modelu: {e}")
-
-    # Pytanie o dane
-    print("\n📝 Podaj dane mówcy:")
-    speaker_name = input("   Imię/nazwa mówcy: ").strip()
-
-    if not speaker_name:
-        speaker_name = "Unknown_Speaker"
-        print(f"   Ustawiono domyślną nazwę: {speaker_name}")
-
-    # Wybór źródła audio
-    print("\n📋 Wybierz źródło audio:")
-    print("   1. Nagraj z mikrofonu (z odsłuchem na żywo)")
-    print("   2. Wczytaj z pliku")
-    print("   3. Test odsłuchu (tylko sprawdzenie mikrofonu/głośnika)")
-
-    source_choice = input("\nWybierz opcję (1-3): ").strip()
-
-    audio_segments = None
-
-    if source_choice == '1':
-        # Nagrywanie z mikrofonu z monitoringiem
-        print("\n🎤 TRYB NAGRYWANIA Z MONITORINGIEM")
-        print("   Nagraj kilka zdań w normalnym tempie")
-        print("   Słyszysz swój głos na głośniku w czasie rzeczywistym")
-
-        audio_segments = record_with_monitoring()
-
-    elif source_choice == '2':
-        # Wczytywanie z plików
-        print("\n💾 TRYB WCZYTYWANIA Z PLIKU")
-
-        # Szukaj domyślnych plików
-        default_files = ["testwav.wav", "1mowca.wav", "audio.wav", "sample.wav"]
-        available_files = [f for f in default_files if os.path.exists(f)]
-
-        if available_files:
-            print(f"\n📁 Znalezione pliki:")
-            for i, file in enumerate(available_files, 1):
-                print(f"   {i}. {file}")
-
-            use_defaults = input("\n   Użyć któregoś z tych plików? (t/n): ").strip().lower()
-
-            if use_defaults == 't':
-                # Wybierz plik
-                if len(available_files) == 1:
-                    audio_files = [available_files[0]]
-                else:
-                    try:
-                        file_num = int(input(f"   Wybierz plik (1-{len(available_files)}): ").strip())
-                        audio_files = [available_files[file_num - 1]]
-                    except:
-                        audio_files = [available_files[0]]
-            else:
-                # Podaj własną ścieżkę
-                file_path = input("   Podaj ścieżkę do pliku audio: ").strip()
-                audio_files = [file_path]
-        else:
-            # Podaj własną ścieżkę
-            file_path = input("   Podaj ścieżkę do pliku audio: ").strip()
-            audio_files = [file_path]
-
-        # Wczytaj audio z plików
-        audio_segments = []
-        for audio_file in audio_files:
-            if os.path.exists(audio_file):
-                audio = load_audio_file(audio_file)
-                if audio is not None:
-                    audio_segments.append(audio)
-                    print(f"✅ Wczytano: {audio_file} ({len(audio) / 16000:.2f}s)")
-                else:
-                    print(f"❌ Błąd wczytywania: {audio_file}")
-            else:
-                print(f"❌ Plik nie istnieje: {audio_file}")
-
-        if not audio_segments:
-            print("❌ Nie wczytano żadnych plików")
-            return
-
-    elif source_choice == '3':
-        # Tylko test odsłuchu
-        print("\n🔊 TRYB TESTOWY")
-        print("   Sprawdzasz tylko działanie mikrofonu i głośnika")
-        print("   Nic nie jest zapisywane!")
-
-        record_with_monitoring()  # To wywoła tryb testowy
-        print("\n✅ Test zakończony")
-        return
-
-    else:
-        print("❌ Nieprawidłowy wybór")
-        return
-
-    if not audio_segments:
-        print("❌ Brak danych audio")
-        return
-
-    # Rejestruj mówcę
-    print("\n🔄 Przetwarzanie danych audio...")
-    success = register_speaker_simple(speaker_name, audio_segments, model)
-
-    if success:
-        print("\n" + "=" * 50)
-        print("🎉 REJESTRACJA ZAKOŃCZONA!")
-        print("=" * 50)
-        print("\n📋 Co dalej:")
-        print("   1. Uruchom Main.py aby użyć systemu")
-        print("   2. Dodaj więcej mówców uruchamiając ten program ponownie")
-    else:
-        print("\n⚠️  Uwaga: Rejestracja nie powiodła się")
-        print("   Spróbuj ponownie z dłuższym nagraniem")
-
-    # Pytanie czy dodać kolejnego mówcę
-    another = input("\n➕ Czy chcesz dodać kolejnego mówcę? (t/n): ").strip().lower()
-    if another == 't':
-        main()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\n👋 Zamykanie programu...")
+    main()
